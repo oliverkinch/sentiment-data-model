@@ -1,0 +1,16 @@
+defaults:
+  - transformer_model: dansk_bert
+  - _self_
+
+
+models:
+  dir: models
+
+paths:
+  train: data/processed/train.csv
+  val: data/processed/val.csv
+  test: data/processed/test.csv
+  
+seed: 4242
+testing: False
+train_split_truncation_length: -1
