@@ -1,7 +1,7 @@
 defaults:
   - transformer_model: dansk_bert
+  - override hydra/job_logging: custom
   - _self_
-
 
 models:
   dir: models

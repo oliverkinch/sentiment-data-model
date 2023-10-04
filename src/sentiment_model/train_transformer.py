@@ -15,8 +15,26 @@ from transformers import (
     Trainer,
     TrainingArguments,
 )
-
 from .load_data import load_splits
+import transformers
+import logging
+
+
+class LoggerLogCallback(transformers.TrainerCallback):
+    # https://github.com/huggingface/transformers/issues/4624#issuecomment-946415931
+    def __init__(self, logger) -> None:
+        super().__init__()
+        self.logger = logger
+
+    def on_log(self, args, state, control, logs=None, **kwargs):
+        control.should_log = False
+        _ = logs.pop("total_flos", None)
+        if state.is_local_process_zero:
+            self.logger.info(logs)
+
+
+logger = logging.getLogger(__name__)
+log_callback = LoggerLogCallback(logger=logger)
 
 
 @hydra.main(config_path="../../config", config_name="config", version_base=None)
@@ -164,7 +182,7 @@ def train_transformer_model(config: DictConfig) -> AutoModelForSequenceClassific
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
-        callbacks=[early_stopping_callback],
+        callbacks=[early_stopping_callback, log_callback],
     )
 
     # Train the model
@@ -178,3 +196,63 @@ def train_transformer_model(config: DictConfig) -> AutoModelForSequenceClassific
 
     # Return the model
     return model
+
+
+# Used to load data and model in notebook
+@hydra.main(config_path="../../config", config_name="config", version_base=None)
+def load_data_model(config: DictConfig):
+
+    # Load the data
+    data_dict = load_splits(config)
+    train_df = data_dict["train"]
+    val_df = data_dict["val"]
+    test_df = data_dict["test"]
+
+    # Only keep the `text` and `label` columns
+    train_df = train_df[["text", "label"]]
+    val_df = val_df[["text", "label"]]
+    test_df = test_df[["text", "label"]]
+
+    # Truncate training split if necessary
+    if config.train_split_truncation_length > 0:
+        train_df = train_df.sample(n=config.train_split_truncation_length)
+        # val_df = val_df.sample(n=config.train_split_truncation_length)
+        # test_df = test_df.sample(n=config.train_split_truncation_length)
+
+    # Convert the data to Hugging Face Dataset objects
+    train = Dataset.from_pandas(train_df, split="train", preserve_index=False)
+    val = Dataset.from_pandas(val_df, split="val", preserve_index=False)
+    test = Dataset.from_pandas(test_df, split="test", preserve_index=False)
+
+    # Collect the data into a DatasetDict
+    dataset = DatasetDict(train=train, val=val, test=test)
+
+    # Get model config
+    model_config = config.transformer_model
+
+    # Create the tokeniser
+    tokenizer = AutoTokenizer.from_pretrained(model_config.model_id)
+    tokenizer.model_max_length = model_config.context_length
+
+    # Create data collator
+    data_collator = DataCollatorWithPadding(
+        tokenizer=tokenizer, padding=model_config.padding
+    )
+
+    # Create the model
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_config.model_id,
+        use_auth_token=model_config.use_auth_token,
+        cache_dir=".cache",
+        from_flax=model_config.from_flax,
+        num_labels=2,
+    )
+
+    # Tokenise the data
+    def tokenise(examples: dict) -> dict:
+        doc = examples["text"]
+        return tokenizer(doc, truncation=True, padding=True)
+
+    dataset = dataset.map(tokenise)
+
+    return dataset, model
